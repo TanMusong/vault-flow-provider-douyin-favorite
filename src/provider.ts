@@ -10,11 +10,9 @@ import { COLLECTION_URL, interceptApiResponse, unfavoritePage } from './actions'
 puppeteer.use(StealthPlugin());
 
 const STORAGE_KEY_COOKIES = 'cookies';
-const STORAGE_KEY_AUTO_UNFAVORITE = 'autoUnfavorite';
-const DEFAULT_CONFIG = { autoUnfavorite: true, requestDelay: 3000 };
 
 export class DouyinFavoriteProvider implements VaultProvider {
-  constructor() {}
+  constructor() { }
 
   private async checkLogin(ctx: ProviderContext, browser: Browser, timeout = 60000): Promise<{ username: string; userId: string }> {
     let username = '', userId = '';
@@ -49,7 +47,7 @@ export class DouyinFavoriteProvider implements VaultProvider {
     } catch (err) {
       console.error('[douyin] checkLogin error:', (err as Error).message);
     } finally {
-      if (page) await page.close().catch(() => {});
+      if (page) await page.close().catch(() => { });
     }
     return { username, userId };
   }
@@ -67,12 +65,11 @@ export class DouyinFavoriteProvider implements VaultProvider {
         return { success: false, message: 'Douyin login expired' };
       }
       ctx.storage.set(STORAGE_KEY_COOKIES, cookies);
-      const interval = (params.interval as number) || 1800;
-      return { success: true, name: username, userId, interval };
+      return { success: true, name: username };
     } catch (err) {
       return { success: false, message: (err as Error).message };
     } finally {
-      if (browser) await browser.close().catch(() => {});
+      if (browser) await browser.close().catch(() => { });
     }
   }
 
@@ -106,7 +103,6 @@ export class DouyinFavoriteProvider implements VaultProvider {
     const startTime = Date.now();
 
     const cookies = ctx.storage.get<string>(STORAGE_KEY_COOKIES) || '';
-    const autoUnfavorite = ctx.storage.get<boolean>(STORAGE_KEY_AUTO_UNFAVORITE) ?? DEFAULT_CONFIG.autoUnfavorite;
     const downloadPathTemplate = ctx.storage.get<string>('downloadPath') || '{type}/{user}/{author_id}_{author}';
 
     let browser: Browser | null = null;
@@ -152,7 +148,7 @@ export class DouyinFavoriteProvider implements VaultProvider {
         skipIds.push(item.id);
         const detailUrl = getDetailUrl(item);
         if (ctx.hasSuccessfulDownloadRecord(item.id)) {
-          if (autoUnfavorite) await unfavoriteWithNewPage(detailUrl);
+          await unfavoriteWithNewPage(detailUrl);
           return;
         }
         const downloadUrls = getDownloadUrls(item);
