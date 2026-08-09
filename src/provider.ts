@@ -55,7 +55,7 @@ export class DouyinFavoriteProvider implements VaultProvider {
   }
 
   async addTask(ctx: ProviderContext, params: AddTaskParams): Promise<AddTaskResponse> {
-    const cookies = ctx.storage.get<string>(STORAGE_KEY_COOKIES) || '';
+    const cookies = params.cookies as string || '';
     if (!cookies) {
       return { success: false, message: 'Cookie is required' };
     }
@@ -66,6 +66,7 @@ export class DouyinFavoriteProvider implements VaultProvider {
       if (!username) {
         return { success: false, message: 'Douyin login expired' };
       }
+      ctx.storage.set(STORAGE_KEY_COOKIES, cookies);
       const interval = (params.interval as number) || 1800;
       return { success: true, name: username, userId, interval };
     } catch (err) {
