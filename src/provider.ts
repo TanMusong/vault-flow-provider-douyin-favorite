@@ -168,7 +168,7 @@ export class DouyinFavoriteProvider implements VaultProvider {
             author_id: String(item.author_id || 'unknown')
           };
           const userDir = downloadPathTemplate.replace(/\{(\w+)\}/g, (_, k) => vars[k] || k);
-          const fullUserDir = ctx.path.join(ctx.configDir, 'downloads', userDir);
+          const fullUserDir = ctx.path.join(ctx.downloadDir, userDir);
           if (!ctx.fs.existsSync(fullUserDir)) ctx.fs.mkdirSync(fullUserDir, { recursive: true });
           for (const dl of downloadUrls) {
             files.push({ type: dl.type, filename: dl.filename, url: dl.urls[0] || '', fileSize: 0, fileExpectedSize: 0, fileStatus: FileStatus.Downloading });
