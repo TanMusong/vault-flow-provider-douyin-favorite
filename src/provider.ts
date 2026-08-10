@@ -1,4 +1,4 @@
-import type { VaultProvider, ProviderContext, DownloadFile, AddTaskParams, AddTaskResponse, ProviderResult } from '@vault-flow/provider-api';
+import type { VaultProvider, ProviderContext, DownloadFile, AddTaskResult, DeleteTaskResult, ExecuteTaskResult, TaskErrorResult } from '@vault-flow/provider-api';
 import { MediaType, FileStatus, DownloadStatus } from '@vault-flow/provider-api';
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
@@ -14,12 +14,11 @@ const STORAGE_KEY_COOKIES = 'cookies';
 export class DouyinFavoriteProvider implements VaultProvider {
   constructor() { }
 
-  private async checkLogin(ctx: ProviderContext, browser: Browser, timeout = 60000): Promise<{ username: string; userId: string }> {
+  private async checkLogin(ctx: ProviderContext, browser: Browser, cookies: string, timeout = 60000): Promise<{ username: string; userId: string }> {
     let username = '', userId = '';
     let page: Page | null = null;
     try {
       page = await browser.newPage();
-      const cookies = ctx.storage.get<string>(STORAGE_KEY_COOKIES) || '';
       if (cookies) {
         const cookiePairs = cookies.split(';').map(c => c.trim()).filter(Boolean);
         const puppeteerCookies = cookiePairs.map(pair => {
@@ -52,29 +51,45 @@ export class DouyinFavoriteProvider implements VaultProvider {
     return { username, userId };
   }
 
-  async addTask(ctx: ProviderContext, params: AddTaskParams): Promise<AddTaskResponse> {
-    const cookies = params.cookies as string || '';
+  private msg(locale: string, key: string, fallback: string): string {
+    const messages: Record<string, Record<string, string>> = {
+      'cookie_required': { 'zh-CN': '请填写 Cookie', 'zh-TW': '請填寫 Cookie', 'en-US': 'Cookie is required' },
+      'login_expired': { 'zh-CN': '抖音登录已过期', 'zh-TW': '抖音登入已過期', 'en-US': 'Douyin login expired' },
+    };
+    const m = messages[key];
+    return m ? (m[locale] || m['en-US'] || fallback) : fallback;
+  }
+
+  async addTask(ctx: ProviderContext): Promise<AddTaskResult | TaskErrorResult> {
+    const cookies = (ctx.config.cookies as string) || '';
     if (!cookies) {
-      return { success: false, message: 'Cookie is required' };
+      return { success: false, message: this.msg(ctx.locale, 'cookie_required', 'Cookie is required') };
     }
     let browser: Browser | null = null;
     try {
       browser = await puppeteer.launch({ headless: true, executablePath: process.env.CHROME_PATH || undefined, args: ['--no-sandbox'] }) as Browser;
-      const { username, userId } = await this.checkLogin(ctx, browser, 60000);
+      const { username, userId } = await this.checkLogin(ctx, browser, cookies, 60000);
       if (!username) {
-        return { success: false, message: 'Douyin login expired' };
+        return { success: false, message: this.msg(ctx.locale, 'login_expired', 'Douyin login expired') };
       }
-      ctx.storage.set(STORAGE_KEY_COOKIES, cookies);
-      if (params.downloadPath) ctx.storage.set('downloadPath', params.downloadPath as string);
       return { success: true, name: username };
     } catch (err) {
       return { success: false, message: (err as Error).message };
     } finally {
-      if (browser) await browser.close().catch(() => { });
+      if (browser) {
+        await Promise.race([
+          browser.close(),
+          new Promise<void>(r => setTimeout(() => { try { (browser as any).process()?.kill(); } catch {} r(); }, 10000)),
+        ]).catch(() => {});
+      }
     }
   }
 
-  async deleteTask(ctx: ProviderContext, taskId: string): Promise<ProviderResult> {
+  async deleteTask(ctx: ProviderContext, taskId: string): Promise<DeleteTaskResult | TaskErrorResult> {
+    return { success: true };
+  }
+
+  async onTaskConfigUpdate(_ctx: ProviderContext, _taskId: string): Promise<DeleteTaskResult> {
     return { success: true };
   }
 
@@ -131,11 +146,11 @@ export class DouyinFavoriteProvider implements VaultProvider {
     }
   }
 
-  async executeTask(ctx: ProviderContext): Promise<{ state: number; message: string; downloaded: number; failed: number; total: number; duration: number }> {
+  async executeTask(ctx: ProviderContext): Promise<ExecuteTaskResult> {
     const startTime = Date.now();
 
-    const cookies = ctx.storage.get<string>(STORAGE_KEY_COOKIES) || '';
-    const downloadPathTemplate = ctx.storage.get<string>('downloadPath') || '{type}/{user}/{author_id}_{author}';
+    const cookies = (ctx.config.cookies as string) || '';
+    const downloadPathTemplate = (ctx.config.downloadPath as string) || '{type}/{user}/{author_id}_{author}';
 
     let browser: Browser | null = null;
     let page: Page | null = null;
@@ -153,10 +168,10 @@ export class DouyinFavoriteProvider implements VaultProvider {
         if (puppeteerCookies.length > 0) await page.setCookie(...puppeteerCookies);
       }
 
-      const { username, userId: uid } = await this.checkLogin(ctx, browser!, 60000);
+      const { username, userId: uid } = await this.checkLogin(ctx, browser!, cookies, 60000);
       if (!username) {
         ctx.addLog('warn', 'Douyin login expired');
-        return { state: 2 as any, message: 'status.login_expired', downloaded: 0, failed: 0, total: 0, duration: Date.now() - startTime };
+        return { state: 2 as any, message: this.msg(ctx.locale, 'login_expired', 'Douyin login expired'), downloaded: 0, failed: 0, total: 0, duration: Date.now() - startTime };
       }
 
       const unfavoriteWithNewPage = async (detailUrl: string): Promise<void> => {
@@ -272,7 +287,12 @@ export class DouyinFavoriteProvider implements VaultProvider {
       return { state: 0, message: (err as Error).message, downloaded: 0, failed: 0, total: 0, duration: Date.now() - startTime };
     } finally {
       if (page) await page.close().catch(() => { });
-      if (browser) await browser.close().catch(() => { });
+      if (browser) {
+        await Promise.race([
+          browser.close(),
+          new Promise<void>(r => setTimeout(() => { try { (browser as any).process()?.kill(); } catch {} r(); }, 10000)),
+        ]).catch(() => {});
+      }
     }
   }
 }
