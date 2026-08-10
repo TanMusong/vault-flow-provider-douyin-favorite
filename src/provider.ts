@@ -5,7 +5,7 @@ import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import type { Browser, Page } from 'puppeteer-core';
 import { writeFileSync } from 'fs';
 import { FetchItem, ApiData, getDetailUrl, getDownloadUrls } from './api';
-import { COLLECTION_URL, interceptApiResponse, unfavoritePage } from './actions';
+import { COLLECTION_URL, unfavoritePage } from './actions';
 
 puppeteer.use(StealthPlugin());
 
@@ -77,26 +77,57 @@ export class DouyinFavoriteProvider implements VaultProvider {
     return { success: true };
   }
 
-  private async fetchItems(page: Page, skipIds?: string[]): Promise<{ items: FetchItem[]; has_more: 0 | 1 }> {
-    const captured = await interceptApiResponse(page, 'listcollection', COLLECTION_URL);
-    if (!captured) return { items: [], has_more: 0 };
+  private async collectItems(page: Page, maxItems = 100): Promise<FetchItem[]> {
+    const allItems: FetchItem[] = [];
+    const seenIds = new Set<string>();
 
-    const apiData = captured as unknown as { aweme_list?: Array<{ aweme_id: string; aweme_type: number; desc?: string; author?: { nickname?: string }; author_user_id: number; video?: Record<string, unknown>; images?: Array<Record<string, unknown>> }>; has_more?: 0 | 1 };
-    const has_more = apiData?.has_more || 0;
-    const items: FetchItem[] = (apiData?.aweme_list || [])
-      .filter(item => !skipIds || skipIds.indexOf(item.aweme_id) < 0)
-      .map((item) => ({
-        id: item.aweme_id,
-        type: item.aweme_type,
-        desc: item.desc || '',
-        author: item.author?.nickname || '',
-        author_id: item.author_user_id,
-        video: (item.video || null) as Record<string, unknown> | null,
-        images: (item.images || []) as Array<Record<string, unknown>>,
-        raw: item
-      }));
+    const handler = async (res: import('puppeteer-core').HTTPResponse) => {
+      const url = res.url();
+      if (!url.includes('listcollection')) return;
+      try {
+        const text = await res.text();
+        let parsed: Record<string, unknown> | null = null;
+        try { parsed = JSON.parse(text); } catch (_e) {
+          const match = text.match(/=\s*({.+})\s*;?\s*$/s);
+          if (match) { try { parsed = JSON.parse(match[1]); } catch (_e2) { /* */ } }
+        }
+        if (!parsed) return;
+        const apiData = parsed as { aweme_list?: Array<{ aweme_id: string; aweme_type: number; desc?: string; author?: { nickname?: string }; author_user_id: number; video?: Record<string, unknown>; images?: Array<Record<string, unknown>> }> };
+        for (const item of (apiData?.aweme_list || [])) {
+          if (!seenIds.has(item.aweme_id)) {
+            seenIds.add(item.aweme_id);
+            allItems.push({
+              id: item.aweme_id, type: item.aweme_type, desc: item.desc || '',
+              author: item.author?.nickname || '', author_id: item.author_user_id,
+              video: (item.video || null) as Record<string, unknown> | null,
+              images: (item.images || []) as Array<Record<string, unknown>>,
+              raw: item
+            });
+          }
+        }
+      } catch (_e) { /* */ }
+    };
 
-    return { items, has_more };
+    page.on('response', handler);
+    try {
+      await page.goto(COLLECTION_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+      for (let i = 0; i < 15 && allItems.length === 0; i++) {
+        await new Promise<void>(r => setTimeout(r, 1000));
+      }
+      while (allItems.length < maxItems) {
+        const prevCount = allItems.length;
+        await page.evaluate(() => window.scrollBy(0, window.innerHeight * 3));
+        await new Promise<void>(r => setTimeout(r, 2000));
+        for (let i = 0; i < 5 && allItems.length === prevCount; i++) {
+          await new Promise<void>(r => setTimeout(r, 1000));
+        }
+        if (allItems.length === prevCount) break;
+      }
+      console.log(`[douyin] collectItems: ${allItems.length} items collected`);
+      return allItems.slice(0, maxItems);
+    } finally {
+      page.off('response', handler);
+    }
   }
 
   async executeTask(ctx: ProviderContext): Promise<{ state: number; message: string; downloaded: number; failed: number; total: number; duration: number }> {
@@ -126,8 +157,7 @@ export class DouyinFavoriteProvider implements VaultProvider {
         ctx.addLog('warn', 'Douyin login expired');
         return { state: 2 as any, message: 'status.login_expired', downloaded: 0, failed: 0, total: 0, duration: Date.now() - startTime };
       }
-      let downloaded = 0, failed = 0;
-      const skipIds: string[] = [];
+
       const unfavoriteWithNewPage = async (detailUrl: string): Promise<void> => {
         const actionPage = await browser!.newPage();
         const cookiePairs = cookies.split(';').map(c => c.trim()).filter(Boolean);
@@ -144,28 +174,33 @@ export class DouyinFavoriteProvider implements VaultProvider {
         }
       };
 
-      const processItem = async (item: FetchItem): Promise<void> => {
-        skipIds.push(item.id);
+      // Phase 1: Collect items
+      const items = await this.collectItems(page!);
+      await page!.close().catch(() => {});
+      page = null;
+      ctx.addLog('info', `Collected ${items.length} items`);
+
+      // Phase 2: Download all items
+      let downloaded = 0, failed = 0;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
         const detailUrl = getDetailUrl(item);
         if (ctx.hasSuccessfulDownloadRecord(item.id)) {
           await unfavoriteWithNewPage(detailUrl);
-          return;
+          continue;
         }
         const downloadUrls = getDownloadUrls(item);
         if (downloadUrls.length === 0) {
           ctx.addLog('warn', `No download URLs: ${item.id} (${item.author})`);
           ctx.addDownloadRecord({ id: item.id, author: item.author, authorId: String(item.author_id), desc: item.desc, state: DownloadStatus.Failed, stateMessage: 'no download urls', files: [], dataJson: { detailUrl, raw: item.raw } });
           failed++;
-          return;
+          continue;
         }
         try {
           const files: DownloadFile[] = [];
           const vars: Record<string, string> = {
-            type: 'douyin',
-            user: username,
-            id: uid,
-            author: item.author || 'unknown',
-            author_id: String(item.author_id || 'unknown')
+            type: 'douyin', user: username, id: uid,
+            author: item.author || 'unknown', author_id: String(item.author_id || 'unknown')
           };
           const userDir = downloadPathTemplate.replace(/\{(\w+)\}/g, (_, k) => vars[k] || k);
           const fullUserDir = ctx.path.join(ctx.downloadDir, userDir);
@@ -179,14 +214,17 @@ export class DouyinFavoriteProvider implements VaultProvider {
             const dest = ctx.path.join(fullUserDir, dl.filename);
             for (const url of dl.urls) {
               try {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 30000);
                 const resp = await fetch(url, {
-                  headers: { 'Cookie': cookies, 'Referer': 'https://www.douyin.com/', 'Origin': 'https://www.douyin.com' }
+                  headers: { 'Cookie': cookies, 'Referer': 'https://www.douyin.com/', 'Origin': 'https://www.douyin.com' },
+                  signal: controller.signal,
                 });
+                clearTimeout(timeout);
                 if (!resp.ok) continue;
-                const contentLength = Number(resp.headers.get('content-length') || '0');
-                files[fi].fileExpectedSize = contentLength;
                 const buffer = Buffer.from(await resp.arrayBuffer());
                 files[fi].fileSize = buffer.length;
+                files[fi].fileExpectedSize = buffer.length;
                 files[fi].url = url;
                 writeFileSync(dest, buffer);
                 files[fi].fileStatus = FileStatus.Success;
@@ -211,28 +249,13 @@ export class DouyinFavoriteProvider implements VaultProvider {
             failed++;
           }
         } catch (err) {
-          console.error('[douyin] download error:', (err as Error).message);
           ctx.addLog('error', `Download error: ${item.id} - ${(err as Error).message}`);
           ctx.addDownloadRecord({ id: item.id, author: item.author, authorId: String(item.author_id), desc: item.desc, state: DownloadStatus.Failed, stateMessage: (err as Error).message.slice(0, 50), files: [], dataJson: { detailUrl, raw: item.raw } });
           failed++;
         }
         await unfavoriteWithNewPage(detailUrl);
-      };
-
-      let fetched: { items: FetchItem[]; has_more: 0 | 1; };
-      let maxRequestCount = 20;
-      let processedCount = 0;
-      do {
-        fetched = await this.fetchItems(page!, skipIds);
-        maxRequestCount--;
-        const concurrency = 3;
-        const items = fetched.items;
-        for (let i = 0; i < items.length; i += concurrency) {
-          await Promise.all(items.slice(i, i + concurrency).map(item => processItem(item)));
-        }
-        processedCount += fetched.items.length;
-        ctx.emitTaskProgress(processedCount, processedCount);
-      } while (fetched.items?.length !== 0 && fetched.has_more === 1 && maxRequestCount > 0);
+        ctx.emitTaskProgress(i + 1, items.length);
+      }
 
       return {
         state: 1,
