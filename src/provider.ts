@@ -65,6 +65,7 @@ export class DouyinFavoriteProvider implements VaultProvider {
         return { success: false, message: 'Douyin login expired' };
       }
       ctx.storage.set(STORAGE_KEY_COOKIES, cookies);
+      if (params.downloadPath) ctx.storage.set('downloadPath', params.downloadPath as string);
       return { success: true, name: username };
     } catch (err) {
       return { success: false, message: (err as Error).message };
@@ -181,8 +182,10 @@ export class DouyinFavoriteProvider implements VaultProvider {
       ctx.addLog('info', `Collected ${items.length} items`);
 
       // Phase 2: Download all items
+      ctx.emitTaskProgress(0, items.length);
       let downloaded = 0, failed = 0;
       for (let i = 0; i < items.length; i++) {
+        ctx.emitTaskProgress(i, items.length);
         const item = items[i];
         const detailUrl = getDetailUrl(item);
         if (ctx.hasSuccessfulDownloadRecord(item.id)) {
