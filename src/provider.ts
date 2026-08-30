@@ -65,24 +65,8 @@ export class DouyinFavoriteProvider implements VaultProvider {
     if (!cookies) {
       return { success: false, message: this.msg(ctx.locale, 'cookie_required', 'Cookie is required') };
     }
-    let browser: Browser | null = null;
-    try {
-      browser = await puppeteer.launch({ headless: true, executablePath: process.env.CHROME_PATH || undefined, args: ['--no-sandbox'] }) as Browser;
-      const { username, userId } = await this.checkLogin(ctx, browser, cookies, 60000);
-      if (!username) {
-        return { success: false, message: this.msg(ctx.locale, 'login_expired', 'Douyin login expired') };
-      }
-      return { success: true, name: username };
-    } catch (err) {
-      return { success: false, message: (err as Error).message };
-    } finally {
-      if (browser) {
-        await Promise.race([
-          browser.close(),
-          new Promise<void>(r => setTimeout(() => { try { (browser as any).process()?.kill(); } catch {} r(); }, 10000)),
-        ]).catch(() => {});
-      }
-    }
+    const taskName = (ctx.config.taskName as string) || `Task-${new Date().toISOString().slice(0, 10)}`;
+    return { success: true, name: taskName };
   }
 
   async deleteTask(ctx: ProviderContext, taskId: string): Promise<DeleteTaskResult | TaskErrorResult> {
