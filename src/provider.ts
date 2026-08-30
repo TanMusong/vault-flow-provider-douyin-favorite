@@ -22,19 +22,18 @@ function sanitizeDirName(name: string): string {
 export class DouyinFavoriteProvider implements VaultProvider {
   constructor() { }
 
-  private async checkLogin(ctx: ProviderContext, browser: Browser, cookies: string, timeout = 60000): Promise<{ username: string; userId: string }> {
+  private parseCookies(cookies: string): { name: string; value: string; domain: string; path: string }[] {
+    return cookies.split(';').map(c => c.trim()).filter(Boolean).map(pair => {
+      const [name, ...valueParts] = pair.split('=');
+      return { name: name.trim(), value: valueParts.join('=').trim(), domain: '.douyin.com', path: '/' };
+    }).filter(c => c.name && c.value);
+  }
+
+  private async checkLogin(ctx: ProviderContext, browser: Browser, timeout = 60000): Promise<{ username: string; userId: string }> {
     let username = '', userId = '';
     let page: Page | null = null;
     try {
       page = await browser.newPage();
-      if (cookies) {
-        const cookiePairs = cookies.split(';').map(c => c.trim()).filter(Boolean);
-        const puppeteerCookies = cookiePairs.map(pair => {
-          const [name, ...valueParts] = pair.split('=');
-          return { name: name.trim(), value: valueParts.join('=').trim(), domain: '.douyin.com', path: '/' };
-        }).filter(c => c.name && c.value);
-        if (puppeteerCookies.length > 0) await page.setCookie(...puppeteerCookies);
-      }
       await page.goto(COLLECTION_URL, { waitUntil: 'networkidle2', timeout });
       for (let i = 0; i < 10; i++) {
         const result = await page.evaluate(() => {
@@ -142,25 +141,19 @@ export class DouyinFavoriteProvider implements VaultProvider {
     const startTime = Date.now();
 
     const cookies = (ctx.config.cookies as string) || '';
+    const puppeteerCookies = this.parseCookies(cookies);
     const downloadPathTemplate = (ctx.config.downloadPath as string) || '{type}/{user}/{author_id}_{author}';
 
     let browser: Browser | null = null;
     let page: Page | null = null;
     try {
       browser = await puppeteer.launch({ headless: true, executablePath: process.env.CHROME_PATH || undefined, args: ['--no-sandbox'] }) as Browser;
+      if (puppeteerCookies.length > 0) await browser.setCookie(...puppeteerCookies);
+
       page = await browser!.newPage();
       await page.setViewport({ width: 1280, height: 800 });
 
-      if (cookies) {
-        const cookiePairs = cookies.split(';').map(c => c.trim()).filter(Boolean);
-        const puppeteerCookies = cookiePairs.map(pair => {
-          const [name, ...valueParts] = pair.split('=');
-          return { name: name.trim(), value: valueParts.join('=').trim(), domain: '.douyin.com', path: '/' };
-        }).filter(c => c.name && c.value);
-        if (puppeteerCookies.length > 0) await page.setCookie(...puppeteerCookies);
-      }
-
-      const { username, userId: uid } = await this.checkLogin(ctx, browser!, cookies, 60000);
+      const { username, userId: uid } = await this.checkLogin(ctx, browser!, 60000);
       if (!username) {
         ctx.addLog('warn', 'Douyin login expired');
         return { state: 2 as any, message: this.msg(ctx.locale, 'login_expired', 'Douyin login expired'), downloaded: 0, failed: 0, total: 0, duration: Date.now() - startTime };
@@ -168,12 +161,6 @@ export class DouyinFavoriteProvider implements VaultProvider {
 
       const unfavoriteWithNewPage = async (detailUrl: string): Promise<void> => {
         const actionPage = await browser!.newPage();
-        const cookiePairs = cookies.split(';').map(c => c.trim()).filter(Boolean);
-        const puppeteerCookies = cookiePairs.map(pair => {
-          const [name, ...valueParts] = pair.split('=');
-          return { name: name.trim(), value: valueParts.join('=').trim(), domain: '.douyin.com', path: '/' };
-        }).filter(c => c.name && c.value);
-        if (puppeteerCookies.length > 0) await actionPage.setCookie(...puppeteerCookies);
         await actionPage.setViewport({ width: 1280, height: 800 });
         try {
           await unfavoritePage(actionPage, detailUrl);
@@ -267,11 +254,12 @@ export class DouyinFavoriteProvider implements VaultProvider {
         ctx.emitTaskProgress(i + 1, items.length);
       }
 
-      // Refresh cookies after task execution
+      // Refresh cookies after task execution — read from any open page in the browser context
       try {
-        if (page) {
-          const p = page as Page;
-          const currentCookies = await p.cookies();
+        const pages = await browser!.pages();
+        const cookiePage = pages[0];
+        if (cookiePage) {
+          const currentCookies = await cookiePage.cookies();
           const cookieStr = currentCookies.map((c: any) => `${c.name}=${c.value}`).join('; ');
           if (cookieStr) {
             ctx.saveConfig({ ...ctx.config, cookies: cookieStr });
