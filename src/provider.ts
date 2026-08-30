@@ -254,16 +254,12 @@ export class DouyinFavoriteProvider implements VaultProvider {
         ctx.emitTaskProgress(i + 1, items.length);
       }
 
-      // Refresh cookies after task execution — read from any open page in the browser context
+      // Refresh cookies after task execution
       try {
-        const pages = await browser!.pages();
-        const cookiePage = pages[0];
-        if (cookiePage) {
-          const currentCookies = await cookiePage.cookies();
-          const cookieStr = currentCookies.map((c: any) => `${c.name}=${c.value}`).join('; ');
-          if (cookieStr) {
-            ctx.saveConfig({ ...ctx.config, cookies: cookieStr });
-          }
+        const currentCookies = await browser!.cookies();
+        const cookieStr = currentCookies.map((c: any) => `${c.name}=${c.value}`).join('; ');
+        if (cookieStr) {
+          ctx.saveConfig({ ...ctx.config, cookies: cookieStr });
         }
       } catch (_e) { /* ignore cookie refresh errors */ }
 
