@@ -11,6 +11,14 @@ puppeteer.use(StealthPlugin());
 
 const STORAGE_KEY_COOKIES = 'cookies';
 
+function sanitizeDirName(name: string): string {
+  return name
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\.+$/, '')
+    .replace(/\s+$/, '')
+    .trim() || 'unknown';
+}
+
 export class DouyinFavoriteProvider implements VaultProvider {
   constructor() { }
 
@@ -201,8 +209,8 @@ export class DouyinFavoriteProvider implements VaultProvider {
         try {
           const files: DownloadFile[] = [];
           const vars: Record<string, string> = {
-            type: 'douyin', user: username, id: uid,
-            author: item.author || 'unknown', author_id: String(item.author_id || 'unknown')
+            type: 'douyin', user: sanitizeDirName(username), id: uid,
+            author: sanitizeDirName(item.author || 'unknown'), author_id: String(item.author_id || 'unknown')
           };
           const userDir = downloadPathTemplate.replace(/\{(\w+)\}/g, (_, k) => vars[k] || k);
           const fullUserDir = ctx.path.join(ctx.downloadDir, userDir);
