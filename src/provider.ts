@@ -142,7 +142,7 @@ export class DouyinFavoriteProvider implements VaultProvider {
 
     const cookies = (ctx.config.cookies as string) || '';
     const puppeteerCookies = this.parseCookies(cookies);
-    const downloadPathTemplate = (ctx.config.downloadPath as string) || '{type}/{user}/{author_id}_{author}';
+    const downloadPathTemplate = (ctx.config.downloadPath as string) || '{type}/{task}/{author_id}_{author}';
 
     let browser: Browser | null = null;
     let page: Page | null = null;
@@ -196,7 +196,7 @@ export class DouyinFavoriteProvider implements VaultProvider {
         try {
           const files: DownloadFile[] = [];
           const vars: Record<string, string> = {
-            type: 'douyin', user: sanitizeDirName(username), id: uid,
+            type: 'douyin', task: sanitizeDirName(ctx.config.taskName as string || 'default'), id: uid,
             author: sanitizeDirName(item.author || 'unknown'), author_id: String(item.author_id || 'unknown')
           };
           const userDir = downloadPathTemplate.replace(/\{(\w+)\}/g, (_, k) => vars[k] || k);
